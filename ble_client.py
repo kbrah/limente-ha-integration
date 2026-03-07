@@ -326,6 +326,11 @@ class TelinkMeshGateway:
         return self._ble_device.name or self._ble_device.address
 
     @property
+    def mesh_name(self) -> str:
+        """Return the mesh network name (used for deduplication)."""
+        return self._mesh_name.decode("ascii")
+
+    @property
     def firmware(self) -> str:
         """Return the firmware version."""
         return self._firmware

@@ -22,7 +22,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .ble_client import TelinkMeshGateway
 from .const import DEVICE_TIMEOUT, DOMAIN, UPDATE_SECONDS
-from .models import SwitchBotLightConfigEntry, SwitchBotLightData
+from .models import LimenteLightConfigEntry, LimenteLightData
 
 BLEAK_EXCEPTIONS = (BleakError, BleakDBusError, asyncio.TimeoutError)
 
@@ -32,7 +32,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: SwitchBotLightConfigEntry
+    hass: HomeAssistant, entry: LimenteLightConfigEntry
 ) -> bool:
     """Set up Limente BLE Mesh Light from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
@@ -87,7 +87,7 @@ async def async_setup_entry(
     except ConfigEntryNotReady:
         raise
 
-    entry.runtime_data = SwitchBotLightData(entry.title, gateway, coordinator)
+    entry.runtime_data = LimenteLightData(entry.title, gateway, coordinator)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
@@ -103,7 +103,7 @@ async def async_setup_entry(
 
 
 async def _async_update_listener(
-    hass: HomeAssistant, entry: SwitchBotLightConfigEntry
+    hass: HomeAssistant, entry: LimenteLightConfigEntry
 ) -> None:
     """Handle options update."""
     if entry.title != entry.runtime_data.title:
@@ -111,7 +111,7 @@ async def _async_update_listener(
 
 
 async def async_unload_entry(
-    hass: HomeAssistant, entry: SwitchBotLightConfigEntry
+    hass: HomeAssistant, entry: LimenteLightConfigEntry
 ) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):

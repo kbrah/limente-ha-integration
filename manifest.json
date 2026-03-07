@@ -1,5 +1,5 @@
 {
-  "domain": "switchbot_light",
+  "domain": "limente_light",
   "name": "Limente BLE Mesh Light",
   "bluetooth": [
     {

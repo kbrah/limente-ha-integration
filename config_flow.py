@@ -1,4 +1,4 @@
-"""Config flow for SwitchBot Light integration."""
+"""Config flow for Limente Light integration."""
 
 from __future__ import annotations
 
@@ -14,13 +14,18 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ADDRESS
 
-from .const import ADV_NAME_PREFIX, DOMAIN, MANUFACTURER_ID
+from .const import ADV_NAME_PREFIX, DEFAULT_MESH_NAME, DOMAIN, MANUFACTURER_ID
 
 _LOGGER = logging.getLogger(__name__)
 
+# Unique ID for the config entry is the mesh name, not the BLE MAC.
+# All nodes on the same mesh share the same credentials/name, so only
+# one config entry (and one gateway connection) is needed per mesh.
+MESH_UNIQUE_ID = DEFAULT_MESH_NAME
 
-class SwitchBotLightConfigFlow(ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for SwitchBot Light."""
+
+class LimenteLightConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Limente Light."""
 
     VERSION = 1
 
@@ -33,7 +38,8 @@ class SwitchBotLightConfigFlow(ConfigFlow, domain=DOMAIN):
         self, discovery_info: BluetoothServiceInfoBleak
     ) -> ConfigFlowResult:
         """Handle the bluetooth discovery step."""
-        await self.async_set_unique_id(discovery_info.address)
+        # Use the mesh name as unique ID so only one entry exists per mesh
+        await self.async_set_unique_id(MESH_UNIQUE_ID)
         self._abort_if_unique_id_configured()
         self._discovery_info = discovery_info
         name = discovery_info.name or discovery_info.address
@@ -51,7 +57,7 @@ class SwitchBotLightConfigFlow(ConfigFlow, domain=DOMAIN):
             discovery_info = self._discovered_devices[address]
             local_name = discovery_info.name or discovery_info.address
             await self.async_set_unique_id(
-                discovery_info.address, raise_on_progress=False
+                MESH_UNIQUE_ID, raise_on_progress=False
             )
             self._abort_if_unique_id_configured()
             return self.async_create_entry(

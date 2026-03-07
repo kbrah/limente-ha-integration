@@ -1,8 +1,8 @@
-"""Constants for the SwitchBot Light integration (Telink Mesh protocol)."""
+"""Constants for the Limente Light integration (Telink Mesh protocol)."""
 
 from uuid import UUID
 
-DOMAIN = "switchbot_light"
+DOMAIN = "limente_light"
 
 # BLE manufacturer ID — Telink vendor ID 0x0211 (decimal 529)
 # Registered to Wonderlabs but actually a Telink Semiconductor chip

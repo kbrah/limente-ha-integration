@@ -24,14 +24,14 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .ble_client import MeshDeviceState, TelinkMeshGateway
 from .const import DOMAIN
-from .models import SwitchBotLightConfigEntry
+from .models import LimenteLightConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: SwitchBotLightConfigEntry,
+    entry: LimenteLightConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up light entities for all mesh devices."""
@@ -96,9 +96,12 @@ class TelinkMeshLightEntity(LightEntity):
         self._gateway = gateway
         self._mesh_address = mesh_address
 
-        # Unique ID: gateway BLE MAC + mesh address (hex)
-        mac_clean = gateway.address.replace(":", "").lower()
-        self._attr_unique_id = f"{mac_clean}_mesh_{mesh_address:02x}"
+        # Unique ID: mesh network name + mesh address (hex)
+        # Using mesh name instead of gateway MAC so that the same physical
+        # device always gets the same unique_id regardless of which BLE
+        # gateway node we connect through.
+        mesh_name_clean = gateway.mesh_name.replace("@", "").lower()
+        self._attr_unique_id = f"{mesh_name_clean}_mesh_{mesh_address:02x}"
 
         self._attr_name = None  # Use device name only (has_entity_name=True)
         self._attr_device_info = DeviceInfo(

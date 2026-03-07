@@ -9,11 +9,11 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .ble_client import TelinkMeshGateway
 
-type SwitchBotLightConfigEntry = ConfigEntry[SwitchBotLightData]
+type LimenteLightConfigEntry = ConfigEntry[LimenteLightData]
 
 
 @dataclass
-class SwitchBotLightData:
+class LimenteLightData:
     """Runtime data for the integration."""
 
     title: str
