@@ -21,7 +21,13 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .ble_client import TelinkMeshGateway
-from .const import DEVICE_TIMEOUT, DOMAIN, UPDATE_SECONDS
+from .const import (
+    ADV_NAME_PREFIX,
+    DEVICE_TIMEOUT,
+    DOMAIN,
+    MANUFACTURER_ID,
+    UPDATE_SECONDS,
+)
 from .models import LimenteLightConfigEntry, LimenteLightData
 
 BLEAK_EXCEPTIONS = (BleakError, BleakDBusError, asyncio.TimeoutError)
@@ -31,16 +37,59 @@ PLATFORMS: list[Platform] = [Platform.LIGHT]
 _LOGGER = logging.getLogger(__name__)
 
 
+def _find_gateway_ble_device(hass: HomeAssistant, preferred_address: str):
+    """Find a connectable BLE node to use as the mesh gateway.
+
+    Any node on the mesh is a valid gateway (they all share the same
+    credentials and relay commands to the whole mesh). We prefer the node the
+    entry was configured with, but if it is off / rebooting / out of range we
+    fall back to any other connectable Limente/Telink node that is currently
+    advertising. This keeps the integration working when the originally-chosen
+    node is temporarily unavailable.
+    """
+    ble_device = bluetooth.async_ble_device_from_address(
+        hass, preferred_address.upper(), True
+    )
+    if ble_device:
+        return ble_device
+
+    for service_info in bluetooth.async_discovered_service_info(
+        hass, connectable=True
+    ):
+        is_mesh_node = MANUFACTURER_ID in service_info.advertisement.manufacturer_data or (
+            service_info.name and service_info.name.startswith(ADV_NAME_PREFIX)
+        )
+        if not is_mesh_node:
+            continue
+        candidate = bluetooth.async_ble_device_from_address(
+            hass, service_info.address, True
+        )
+        if candidate:
+            _LOGGER.warning(
+                "Configured gateway node %s is not reachable; using mesh "
+                "node %s as gateway instead",
+                preferred_address,
+                service_info.address,
+            )
+            return candidate
+
+    return None
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: LimenteLightConfigEntry
 ) -> bool:
     """Set up Limente BLE Mesh Light from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
-    ble_device = bluetooth.async_ble_device_from_address(hass, address.upper(), True)
+    ble_device = _find_gateway_ble_device(hass, address)
     if not ble_device:
         raise ConfigEntryNotReady(
-            f"Could not find device with address {address}"
+            f"No reachable Limente mesh node found (configured {address})"
         )
+
+    # Use whichever node we actually connected through for the BLE callback
+    # matcher below, so passive advertisement updates refresh the right device.
+    address = ble_device.address
 
     gateway = TelinkMeshGateway(ble_device)
 
