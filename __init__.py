@@ -73,6 +73,31 @@ def _find_gateway_ble_device(hass: HomeAssistant, preferred_address: str):
             )
             return candidate
 
+    # Nothing usable found — log everything HA's Bluetooth currently sees
+    # (connectable and not) so we can tell whether the lights are absent,
+    # visible-but-not-connectable, or advertising with unexpected data.
+    all_infos = list(
+        bluetooth.async_discovered_service_info(hass, connectable=False)
+    )
+    connectable_addrs = {
+        si.address
+        for si in bluetooth.async_discovered_service_info(hass, connectable=True)
+    }
+    _LOGGER.warning(
+        "No reachable Limente node. HA Bluetooth sees %d device(s):",
+        len(all_infos),
+    )
+    for si in all_infos:
+        mfr_ids = list(si.advertisement.manufacturer_data.keys())
+        _LOGGER.warning(
+            "  addr=%s name=%r rssi=%s connectable=%s manufacturer_ids=%s",
+            si.address,
+            si.name,
+            si.rssi,
+            si.address in connectable_addrs,
+            mfr_ids,
+        )
+
     return None
 
 
