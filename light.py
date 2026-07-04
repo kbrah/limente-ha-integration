@@ -19,6 +19,7 @@ from homeassistant.components.light import (
     LightEntity,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -40,6 +41,26 @@ async def async_setup_entry(
 
     # Track which mesh addresses already have entities to avoid duplicates
     known_addresses: set[int] = set()
+
+    # Restore entities from the entity registry so the lights reappear
+    # immediately after a restart, even before any BLE notification has been
+    # decoded. Without this, a slow/dropped first connection would leave HA
+    # with zero entities ("the integration no longer provides the lights").
+    # Restored devices start offline and become available once the first
+    # 0xDC/0xDB report confirms they are reachable.
+    ent_reg = er.async_get(hass)
+    for registry_entry in er.async_entries_for_config_entry(
+        ent_reg, entry.entry_id
+    ):
+        unique_id = registry_entry.unique_id
+        if "_mesh_" not in unique_id:
+            continue
+        try:
+            mesh_address = int(unique_id.rsplit("_mesh_", 1)[1], 16)
+        except ValueError:
+            continue
+        # Create the device state so the entity below has something to bind to.
+        gateway.get_device(mesh_address)
 
     @callback
     def _async_add_mesh_device(mesh_address: int) -> None:

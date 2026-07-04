@@ -283,6 +283,8 @@ class TelinkMeshGateway:
         self._client: BleakClientWithServiceCache | None = None
         self._disconnect_timer: asyncio.TimerHandle | None = None
         self._keep_alive_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._expected_disconnect: bool = False
         self._lock = asyncio.Lock()
 
         # Telink Mesh session state
@@ -400,6 +402,9 @@ class TelinkMeshGateway:
             return self._client
 
         if self._client:
+            # Tearing down a stale client on purpose; suppress the reconnect
+            # callback until the new connection is established below.
+            self._expected_disconnect = True
             try:
                 await self._client.disconnect()
             except Exception:
@@ -412,18 +417,34 @@ class TelinkMeshGateway:
             BleakClientWithServiceCache,
             self._ble_device,
             self.name,
+            disconnected_callback=self._on_disconnected,
         )
 
+        self._client = client
+        # A fresh connection is up; any drop from here on is unexpected and
+        # should trigger a prompt reconnect.
+        self._expected_disconnect = False
         try:
             await client.start_notify(
                 str(NOTIFY_CHAR_UUID), self._notification_handler
             )
         except Exception as ex:
+            # A connection without notifications is useless: we would never
+            # receive 0xDC/0xDB reports, so no device would ever be discovered
+            # or marked online. Tear down and fail so the caller retries
+            # instead of silently holding a dead connection.
             _LOGGER.warning(
                 "MeshGateway: Failed to subscribe to notifications: %s", ex
             )
+            self._client = None
+            try:
+                await client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            raise BleakError(
+                f"Failed to subscribe to notifications: {ex}"
+            ) from ex
 
-        self._client = client
         await self._login()
         self._reset_disconnect_timer()
         self._start_keep_alive()
@@ -556,6 +577,11 @@ class TelinkMeshGateway:
             device = self.get_device(dev_addr)
             device.brightness = brightness
             device.is_on = brightness > 0
+            # Receiving a status report proves the device is reachable on the
+            # mesh. Without this, a device discovered via a 0xDB poll response
+            # (rather than a spontaneous 0xDC online report) would stay
+            # online=False forever and show as permanently unavailable.
+            device.online = True
             _LOGGER.debug(
                 "MeshGateway: 0xDB addr=0x%02x brightness=%d",
                 dev_addr, brightness,
@@ -684,6 +710,45 @@ class TelinkMeshGateway:
     # Connection Lifecycle
     # ========================================================================
 
+    def _on_disconnected(self, client: BleakClientWithServiceCache) -> None:
+        """Handle an unexpected BLE disconnect.
+
+        Called by bleak from the event loop when the link drops. For intentional
+        disconnects (idle timeout, shutdown) we do nothing; otherwise we
+        schedule a prompt reconnect so state recovers in seconds instead of
+        waiting for the next coordinator poll.
+        """
+        if client is not self._client or self._expected_disconnect:
+            return
+
+        _LOGGER.debug("MeshGateway: BLE link lost unexpectedly, reconnecting")
+        self._logged_in = False
+        self._session_key = None
+        self._stop_keep_alive()
+        if self._disconnect_timer:
+            self._disconnect_timer.cancel()
+            self._disconnect_timer = None
+
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.ensure_future(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        """Re-establish the connection and refresh device state."""
+        async with self._lock:
+            if self._expected_disconnect:
+                return
+            try:
+                await self._ensure_connected()
+            except BLEAK_EXCEPTIONS as ex:
+                # Give up quietly; the coordinator poll will retry on its cycle.
+                _LOGGER.debug("MeshGateway: Reconnect failed: %s", ex)
+                return
+        try:
+            await self.update()
+        except BLEAK_EXCEPTIONS:
+            pass
+
     def _reset_disconnect_timer(self) -> None:
         """Reset the disconnect timer."""
         if self._disconnect_timer:
@@ -727,7 +792,8 @@ class TelinkMeshGateway:
             self._keep_alive_task = None
 
     async def _disconnect(self) -> None:
-        """Disconnect from the device."""
+        """Disconnect from the device (intentional: idle timeout or shutdown)."""
+        self._expected_disconnect = True
         self._stop_keep_alive()
         self._logged_in = False
         self._session_key = None
@@ -741,7 +807,11 @@ class TelinkMeshGateway:
 
     async def stop(self) -> None:
         """Stop the gateway and disconnect."""
+        self._expected_disconnect = True
         self._stop_keep_alive()
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            self._reconnect_task = None
         if self._disconnect_timer:
             self._disconnect_timer.cancel()
             self._disconnect_timer = None
