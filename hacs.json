@@ -1,0 +1,5 @@
+{
+  "name": "Limente BLE Mesh Light",
+  "content_in_root": true,
+  "homeassistant": "2025.2.0"
+}
