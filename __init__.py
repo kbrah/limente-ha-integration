@@ -37,7 +37,9 @@ PLATFORMS: list[Platform] = [Platform.LIGHT]
 _LOGGER = logging.getLogger(__name__)
 
 
-def _find_gateway_ble_device(hass: HomeAssistant, preferred_address: str):
+def _find_gateway_ble_device(
+    hass: HomeAssistant, preferred_address: str, log_unreachable: bool = True
+):
     """Find a connectable BLE node to use as the mesh gateway.
 
     Any node on the mesh is a valid gateway (they all share the same
@@ -73,6 +75,9 @@ def _find_gateway_ble_device(hass: HomeAssistant, preferred_address: str):
             )
             return candidate
 
+    if not log_unreachable:
+        return None
+
     # Nothing usable found — log everything HA's Bluetooth currently sees
     # (connectable and not) so we can tell whether the lights are absent,
     # visible-but-not-connectable, or advertising with unexpected data.
@@ -105,16 +110,12 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: LimenteLightConfigEntry
 ) -> bool:
     """Set up Limente BLE Mesh Light from a config entry."""
-    address: str = entry.data[CONF_ADDRESS]
-    ble_device = _find_gateway_ble_device(hass, address)
+    configured_address: str = entry.data[CONF_ADDRESS]
+    ble_device = _find_gateway_ble_device(hass, configured_address)
     if not ble_device:
         raise ConfigEntryNotReady(
-            f"No reachable Limente mesh node found (configured {address})"
+            f"No reachable Limente mesh node found (configured {configured_address})"
         )
-
-    # Use whichever node we actually connected through for the BLE callback
-    # matcher below, so passive advertisement updates refresh the right device.
-    address = ble_device.address
 
     gateway = TelinkMeshGateway(ble_device)
 
@@ -124,26 +125,50 @@ async def async_setup_entry(
         change: bluetooth.BluetoothChange,
     ) -> None:
         """Update from a BLE callback."""
+        if service_info.address != gateway.address:
+            return
         gateway.set_ble_device_and_advertisement_data(
             service_info.device, service_info.advertisement
         )
 
-    entry.async_on_unload(
-        bluetooth.async_register_callback(
-            hass,
-            _async_update_ble,
-            BluetoothCallbackMatcher({ADDRESS: address}),
-            bluetooth.BluetoothScanningMode.PASSIVE,
+    # Track advertisements of whichever node we actually connect through, so
+    # passive advertisement updates refresh the right device. Re-registered
+    # when the gateway fails over to another node.
+    unsub_ble: list = []
+
+    @callback
+    def _async_track_gateway_node() -> None:
+        while unsub_ble:
+            unsub_ble.pop()()
+        unsub_ble.append(
+            bluetooth.async_register_callback(
+                hass,
+                _async_update_ble,
+                BluetoothCallbackMatcher({ADDRESS: gateway.address}),
+                bluetooth.BluetoothScanningMode.PASSIVE,
+            )
         )
-    )
+
+    @callback
+    def _async_untrack_gateway_node() -> None:
+        while unsub_ble:
+            unsub_ble.pop()()
+
+    _async_track_gateway_node()
+    entry.async_on_unload(_async_untrack_gateway_node)
 
     async def _async_update() -> None:
         """Update the device state."""
         try:
             await gateway.update()
-        except BLEAK_EXCEPTIONS as ex:
-            raise UpdateFailed(str(ex)) from ex
-        except ValueError as ex:
+        except (*BLEAK_EXCEPTIONS, ValueError) as ex:
+            # The node we connect through may have been switched off or gone
+            # out of range; any other mesh node works as a gateway.
+            candidate = _find_gateway_ble_device(
+                hass, configured_address, log_unreachable=False
+            )
+            if candidate and gateway.switch_gateway_node(candidate):
+                _async_track_gateway_node()
             raise UpdateFailed(str(ex)) from ex
 
     coordinator = DataUpdateCoordinator(
@@ -159,7 +184,16 @@ async def async_setup_entry(
     try:
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryNotReady:
+        # Don't leak a half-open connection (e.g. connected but login
+        # rejected) across setup retries.
+        await gateway.stop()
         raise
+
+    # The light entities are not CoordinatorEntity subclasses, and
+    # DataUpdateCoordinator only schedules periodic refreshes while it has
+    # listeners. Without this the coordinator would never poll again after
+    # the first refresh, so a dropped connection would never be re-established.
+    entry.async_on_unload(coordinator.async_add_listener(lambda: None))
 
     entry.runtime_data = LimenteLightData(entry.title, gateway, coordinator)
 

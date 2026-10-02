@@ -70,12 +70,13 @@ class LimenteLightConfigFlow(ConfigFlow, domain=DOMAIN):
         if discovery := self._discovery_info:
             self._discovered_devices[discovery.address] = discovery
         else:
-            current_addresses = self._async_current_ids(include_ignore=False)
+            # Unique IDs are the mesh name, not node addresses, so a mesh that
+            # is already set up must be rejected up front rather than after
+            # the user has picked a node.
+            await self.async_set_unique_id(MESH_UNIQUE_ID, raise_on_progress=False)
+            self._abort_if_unique_id_configured()
             for discovery in async_discovered_service_info(self.hass):
-                if (
-                    discovery.address in current_addresses
-                    or discovery.address in self._discovered_devices
-                ):
+                if discovery.address in self._discovered_devices:
                     continue
                 # Match by manufacturer_id or name prefix
                 if MANUFACTURER_ID in discovery.advertisement.manufacturer_data or (

@@ -101,14 +101,22 @@ except ImportError:
     except ImportError:
         _AES_Module = None
 
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+except ImportError:
+    Cipher = None
+
 
 def _aes_ecb_encrypt(key: bytes, data: bytes) -> bytes:
     """Standard AES-128-ECB encryption of a single 16-byte block."""
     if _AES_Module is not None:
         cipher = _AES_Module.new(key, _AES_Module.MODE_ECB)
         return cipher.encrypt(data)
+    if Cipher is not None:
+        encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        return encryptor.update(data) + encryptor.finalize()
     raise ImportError(
-        "No AES library found. Install pycryptodome: pip install pycryptodome"
+        "No AES library found. Install pycryptodome or cryptography"
     )
 
 
@@ -380,6 +388,31 @@ class TelinkMeshGateway:
         self._mac_bytes = _mac_string_to_bytes(ble_device.address)
         self._parse_advertisement(advertisement_data)
 
+    def switch_gateway_node(self, ble_device: BLEDevice) -> bool:
+        """Switch to a different mesh node as the BLE gateway.
+
+        Only allowed while no connection is active: the node's MAC is part of
+        the session crypto, so it cannot change under a live session. Returns
+        True if the switch happened.
+        """
+        if ble_device.address == self._ble_device.address:
+            return False
+        if self._client and self._client.is_connected:
+            return False
+        _LOGGER.warning(
+            "MeshGateway: Switching gateway node %s -> %s",
+            self._ble_device.address,
+            ble_device.address,
+        )
+        self._ble_device = ble_device
+        self._advertisement_data = None
+        self._mac_bytes = _mac_string_to_bytes(ble_device.address)
+        self._gateway_mesh_address = self._mac_bytes[-1]
+        self._client = None
+        self._logged_in = False
+        self._session_key = None
+        return True
+
     def _parse_advertisement(self, advertisement_data: AdvertisementData) -> None:
         """Parse state from advertisement data."""
         mfr_data = advertisement_data.manufacturer_data.get(MANUFACTURER_ID)
@@ -485,7 +518,11 @@ class TelinkMeshGateway:
             login_random, self._mesh_name, self._mesh_password, response
         )
         self._logged_in = True
-        self._sequence_number = 1
+        # Start each session at a random sequence number. Mesh nodes keep a
+        # cache of recently relayed sequence numbers to suppress loops; always
+        # restarting at 1 makes them drop our first commands after a
+        # reconnect as replays.
+        self._sequence_number = int.from_bytes(os.urandom(3), "little")
         _LOGGER.info("MeshGateway: Login successful!")
 
         try:
@@ -740,14 +777,14 @@ class TelinkMeshGateway:
                 return
             try:
                 await self._ensure_connected()
-            except BLEAK_EXCEPTIONS as ex:
+            except Exception as ex:  # noqa: BLE001
                 # Give up quietly; the coordinator poll will retry on its cycle.
                 _LOGGER.debug("MeshGateway: Reconnect failed: %s", ex)
                 return
         try:
             await self.update()
-        except BLEAK_EXCEPTIONS:
-            pass
+        except Exception as ex:  # noqa: BLE001
+            _LOGGER.debug("MeshGateway: Post-reconnect update failed: %s", ex)
 
     def _reset_disconnect_timer(self) -> None:
         """Reset the disconnect timer."""
@@ -755,8 +792,14 @@ class TelinkMeshGateway:
             self._disconnect_timer.cancel()
         loop = asyncio.get_running_loop()
         self._disconnect_timer = loop.call_later(
-            DISCONNECT_DELAY, lambda: asyncio.ensure_future(self._disconnect())
+            DISCONNECT_DELAY,
+            lambda: asyncio.ensure_future(self._idle_disconnect()),
         )
+
+    async def _idle_disconnect(self) -> None:
+        """Disconnect after the idle timeout, without racing a command."""
+        async with self._lock:
+            await self._disconnect()
 
     def _start_keep_alive(self) -> None:
         """Start the keep-alive task."""
@@ -803,7 +846,7 @@ class TelinkMeshGateway:
                 await self._client.disconnect()
             except Exception:
                 _LOGGER.debug("MeshGateway: Error disconnecting", exc_info=True)
-            self._client = None
+        self._client = None
 
     async def stop(self) -> None:
         """Stop the gateway and disconnect."""
